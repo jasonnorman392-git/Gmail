@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gmail Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="dashboard.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-wrap">
+          <div class="menu-btn" aria-label="Menu">☰</div>
+          <div class="gmail-brand" aria-label="Gmail logo">
+            <span class="g blue">M</span>
+            <span class="g red">a</span>
+            <span class="g yellow">i</span>
+            <span class="g blue">l</span>
+          </div>
+        </div>
+
+        <div class="search-wrap">
+          <span class="search-icon">⌕</span>
+          <input type="text" placeholder="Search mail" aria-label="Search mail" />
+        </div>
+
+        <div class="profile-wrap">
+          <button id="logoutBtn" class="logout-btn" type="button">Sign out</button>
+        </div>
+      </header>
+
+      <main class="content-area">
+        <aside class="sidebar">
+          <button class="compose-btn">Compose</button>
+          <nav class="nav-menu">
+            <div class="nav-item active">Inbox</div>
+            <div class="nav-item">Starred</div>
+            <div class="nav-item">Snoozed</div>
+            <div class="nav-item">Sent</div>
+            <div class="nav-item">Drafts</div>
+          </nav>
+        </aside>
+
+        <section class="inbox-panel">
+          <div class="inbox-header">
+            <h1>Inbox</h1>
+            <span id="welcomeText">Welcome</span>
+          </div>
+
+          <div id="mailList" class="mail-list"></div>
+          <div id="messageDetail" class="message-detail hidden"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="dashboard.js"></script>
+  </body>
+</html>

