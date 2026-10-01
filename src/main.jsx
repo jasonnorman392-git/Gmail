@@ -4,6 +4,8 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import App from './App';
 import './styles.css';
 
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3000';
+
 const ProtectedRoute = ({ user, children }) => {
   if (!user) {
     return <Navigate to="/login" replace />;
@@ -35,7 +37,7 @@ function AppRoutes() {
   React.useEffect(() => {
     const checkSession = async () => {
       try {
-        const res = await fetch('http://localhost:3000/api/session', { credentials: 'include' });
+        const res = await fetch(`${API_BASE}/api/session`, { credentials: 'include' });
         const data = await res.json();
         setUser(data.authenticated ? data.user : null);
       } catch (error) {
@@ -57,6 +59,7 @@ function AppRoutes() {
     <Routes>
       <Route path="/login" element={<PublicRoute user={user}><App mode="login" user={user} setUser={setUser} /></PublicRoute>} />
       <Route path="/signup" element={<PublicRoute user={user}><App mode="signup" user={user} setUser={setUser} /></PublicRoute>} />
+      <Route path="/reset" element={<PublicRoute user={user}><App mode="reset" user={user} setUser={setUser} /></PublicRoute>} />
       <Route path="/inbox" element={<ProtectedRoute user={user}><App mode="inbox" user={user} setUser={setUser} /></ProtectedRoute>} />
       <Route path="/" element={<Navigate to={user ? '/inbox' : '/login'} replace />} />
       <Route path="*" element={<Navigate to={user ? '/inbox' : '/login'} replace />} />

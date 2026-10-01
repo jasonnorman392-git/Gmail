@@ -2,5 +2,6 @@ node_modules/
 dist/
 .vite/
 app.db
+php.txt
 .env
 npm-debug.log*

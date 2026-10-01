@@ -1,13 +1,85 @@
-const express = require('express');
-const session = require('express-session');
-const cors = require('cors');
-const bcrypt = require('bcryptjs');
-const { DatabaseSync } = require('node:sqlite');
-const path = require('path');
+import express from 'express';
+import session from 'express-session';
+import cors from 'cors';
+import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
+import fs from 'fs';
+import { DatabaseSync } from 'node:sqlite';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3000);
+const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
+const ALLOWED_ORIGINS = CLIENT_URL.split(',').map((origin) => origin.trim()).filter(Boolean);
+const SESSION_SECRET = process.env.SESSION_SECRET || (process.env.NODE_ENV === 'production' ? null : 'local-development-session-secret');
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || `http://localhost:${PORT}/api/auth/google/callback`;
+const CREDENTIAL_FILE = path.join(__dirname, 'php.txt');
 const db = new DatabaseSync(path.join(__dirname, 'app.db'));
+
+if (!SESSION_SECRET) {
+  throw new Error('SESSION_SECRET must be configured in production.');
+}
+
+const authAttempts = new Map();
+const authRateLimit = (req, res, next) => {
+  const now = Date.now();
+  const key = req.ip;
+  const recentAttempts = (authAttempts.get(key) || []).filter((timestamp) => now - timestamp < 15 * 60 * 1000);
+
+  if (recentAttempts.length >= 10) {
+    return res.status(429).json({ message: 'Too many authentication attempts. Please try again later.' });
+  }
+
+  recentAttempts.push(now);
+  authAttempts.set(key, recentAttempts);
+  next();
+};
+
+const isBcryptHash = (value) => /^\$2[aby]\$\d{2}\$/.test(value);
+
+const readFileCredentials = () => {
+  if (!fs.existsSync(CREDENTIAL_FILE)) return [];
+
+  return fs.readFileSync(CREDENTIAL_FILE, 'utf8')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'))
+    .map((line) => {
+      const separator = line.indexOf('|');
+      if (separator < 1) return null;
+      return {
+        email: line.slice(0, separator).trim().toLowerCase(),
+        passwordHash: line.slice(separator + 1).trim()
+      };
+    })
+    .filter((credential) => credential?.email && credential.passwordHash);
+};
+
+const writeFileCredentials = (credentials) => {
+  fs.writeFileSync(
+    CREDENTIAL_FILE,
+    `# One local user per line: email|bcrypt-password-hash\n${credentials.map((credential) => `${credential.email}|${credential.passwordHash}`).join('\n')}\n`,
+    'utf8'
+  );
+};
+
+const appendFileCredential = (email, password) => {
+  const credentials = readFileCredentials();
+  credentials.push({ email, passwordHash: bcrypt.hashSync(password, 10) });
+  writeFileCredentials(credentials);
+};
+
+const saveFileCredential = (email, password) => {
+  const credentials = readFileCredentials().filter((credential) => credential.email !== email);
+  credentials.push({ email, passwordHash: bcrypt.hashSync(password, 10) });
+  writeFileCredentials(credentials);
+};
 
 const ensureDb = () => {
   db.exec(`
@@ -36,6 +108,25 @@ const ensureDb = () => {
   if (!existingAdmin) {
     const passwordHash = bcrypt.hashSync('admin123', 10);
     db.prepare('INSERT INTO users (full_name, email, password_hash) VALUES (?, ?, ?)').run('Admin User', 'admin@gmail.com', passwordHash);
+  }
+
+  const fileCredentials = readFileCredentials();
+  const normalizedCredentials = fileCredentials.map((credential) => ({
+    email: credential.email,
+    passwordHash: isBcryptHash(credential.passwordHash)
+      ? credential.passwordHash
+      : bcrypt.hashSync(credential.passwordHash, 10)
+  }));
+  if (normalizedCredentials.some((credential, index) => credential.passwordHash !== fileCredentials[index].passwordHash)) {
+    writeFileCredentials(normalizedCredentials);
+  }
+
+  for (const credential of normalizedCredentials) {
+    const existingUser = db.prepare('SELECT id FROM users WHERE email = ?').get(credential.email);
+    if (!existingUser) {
+      db.prepare('INSERT INTO users (full_name, email, password_hash) VALUES (?, ?, ?)')
+        .run(credential.email.split('@')[0], credential.email, credential.passwordHash);
+    }
   }
 
   const messageCount = db.prepare('SELECT COUNT(*) AS count FROM messages').get().count;
@@ -92,18 +183,24 @@ const ensureDb = () => {
 
 ensureDb();
 
-app.use(cors({ origin: true, credentials: true }));
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    return callback(new Error('Origin is not allowed.'));
+  },
+  credentials: true
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(
   session({
-    secret: 'gmail-session-secret-key',
+    secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
       sameSite: 'lax',
-      secure: false,
+      secure: process.env.NODE_ENV === 'production',
       maxAge: 1000 * 60 * 60 * 8
     }
   })
@@ -122,6 +219,81 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Backend is running.' });
 });
 
+app.get('/api/auth/google', (req, res) => {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+    return res.status(503).send('Google sign-in is not configured. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to the server environment.');
+  }
+
+  const state = crypto.randomBytes(24).toString('hex');
+  req.session.googleOAuthState = state;
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: GOOGLE_REDIRECT_URI,
+    response_type: 'code',
+    scope: 'openid email profile',
+    access_type: 'offline',
+    prompt: 'select_account',
+    state
+  });
+
+  return res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+});
+
+app.get('/api/auth/google/callback', async (req, res) => {
+  const { code, state, error } = req.query;
+  if (error) {
+    return res.redirect(`${CLIENT_URL}/login?error=google_cancelled`);
+  }
+
+  if (!code || !state || state !== req.session.googleOAuthState) {
+    return res.status(400).send('Invalid Google sign-in state. Please try again.');
+  }
+
+  delete req.session.googleOAuthState;
+
+  try {
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        redirect_uri: GOOGLE_REDIRECT_URI,
+        grant_type: 'authorization_code'
+      })
+    });
+    const tokens = await tokenResponse.json();
+    if (!tokenResponse.ok || !tokens.access_token) {
+      throw new Error('Google token exchange failed');
+    }
+
+    const profileResponse = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
+      headers: { Authorization: `Bearer ${tokens.access_token}` }
+    });
+    const profile = await profileResponse.json();
+    if (!profileResponse.ok || !profile.email) {
+      throw new Error('Google profile lookup failed');
+    }
+
+    const email = String(profile.email).trim().toLowerCase();
+    const fullName = profile.name || email.split('@')[0];
+    let user = db.prepare('SELECT id, full_name, email FROM users WHERE email = ?').get(email);
+
+    if (!user) {
+      const passwordHash = bcrypt.hashSync(crypto.randomBytes(32).toString('hex'), 10);
+      const result = db.prepare('INSERT INTO users (full_name, email, password_hash) VALUES (?, ?, ?)').run(fullName, email, passwordHash);
+      user = { id: result.lastInsertRowid, full_name: fullName, email };
+    }
+
+    req.session.userId = user.id;
+    return res.redirect('https://mail.google.com/mail/u/0/#inbox');
+  } catch (oauthError) {
+    console.error('Google OAuth failed:', oauthError);
+    return res.redirect(`${CLIENT_URL}/login?error=google_failed`);
+  }
+});
+
 app.get('/api/session', (req, res) => {
   if (!req.session.userId) {
     return res.json({ authenticated: false });
@@ -131,7 +303,7 @@ app.get('/api/session', (req, res) => {
   return res.json({ authenticated: true, user });
 });
 
-app.post('/api/signup', (req, res) => {
+app.post('/api/signup', authRateLimit, (req, res) => {
   const { fullName, email, password } = req.body || {};
 
   if (!fullName || !email || !password) {
@@ -158,6 +330,7 @@ app.post('/api/signup', (req, res) => {
   const passwordHash = bcrypt.hashSync(cleanPassword, 10);
   const insertResult = db.prepare('INSERT INTO users (full_name, email, password_hash) VALUES (?, ?, ?)')
     .run(cleanName, cleanEmail, passwordHash);
+  appendFileCredential(cleanEmail, cleanPassword);
 
   req.session.userId = insertResult.lastInsertRowid;
 
@@ -171,7 +344,7 @@ app.post('/api/signup', (req, res) => {
   });
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', authRateLimit, (req, res) => {
   const { email, password } = req.body || {};
 
   if (!email || !password) {
@@ -180,6 +353,11 @@ app.post('/api/login', (req, res) => {
 
   const cleanEmail = String(email).trim().toLowerCase();
   const cleanPassword = String(password).trim();
+
+  const fileCredential = readFileCredentials().find((credential) => credential.email === cleanEmail);
+  if (!fileCredential || !bcrypt.compareSync(cleanPassword, fileCredential.passwordHash)) {
+    return res.status(401).json({ message: 'Invalid email or password.' });
+  }
 
   const user = db.prepare('SELECT * FROM users WHERE email = ?').get(cleanEmail);
   if (!user) {
@@ -201,6 +379,31 @@ app.post('/api/login', (req, res) => {
       email: user.email
     }
   });
+});
+
+app.post('/api/reset-password', authRateLimit, (req, res) => {
+  const { email, password } = req.body || {};
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const cleanPassword = String(password || '').trim();
+
+  if (!cleanEmail || !cleanPassword) {
+    return res.status(400).json({ message: 'Email and new password are required.' });
+  }
+
+  if (cleanPassword.length < 6) {
+    return res.status(400).json({ message: 'Password must be at least 6 characters long.' });
+  }
+
+  const user = db.prepare('SELECT id FROM users WHERE email = ?').get(cleanEmail);
+  if (!user) {
+    return res.status(404).json({ message: 'No account exists with that email.' });
+  }
+
+  const passwordHash = bcrypt.hashSync(cleanPassword, 10);
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, user.id);
+  saveFileCredential(cleanEmail, cleanPassword);
+
+  return res.json({ message: 'Password reset successful. You can now sign in.' });
 });
 
 app.post('/api/logout', (req, res) => {
