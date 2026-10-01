@@ -192,7 +192,7 @@ function App({ mode = 'login', user, setUser }) {
           {mode === 'login' && (
             <>
               <div className="auth-divider"><span>or</span></div>
-              <a className="google-login-btn" href="http://localhost:3000/api/auth/google">
+              <a className="google-login-btn" href={`${API_BASE}/api/auth/google`}>
                 <span className="google-mark">G</span>
                 Continue with Google
               </a>

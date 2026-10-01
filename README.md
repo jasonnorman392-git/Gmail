@@ -4,7 +4,7 @@ A Gmail-style React inbox with an Express backend, SQLite persistence, session a
 
 ## Requirements
 
-- Node.js 22+
+- Node.js 22.9+
 - npm
 
 ## Install
