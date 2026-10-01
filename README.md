@@ -1,6 +1,6 @@
 # Gmail Login App
 
-A Gmail-style React inbox with an Express backend, SQLite persistence, session authentication, signup, password recovery, compose, and optional Google OAuth login.
+A Gmail-style React inbox with an Express backend, SQLite persistence, session authentication, signup, password recovery, and compose.
 
 ## Requirements
 
@@ -13,19 +13,14 @@ A Gmail-style React inbox with an Express backend, SQLite persistence, session a
 npm install
 ```
 
-Create a `.env` file in the project root. Start with `.env.example`:
+Create a `.env` file in the project root using `.env.example` as a template:
 
 ```env
 PORT=3000
 CLIENT_URL=http://localhost:5173
 SESSION_SECRET=replace-with-a-long-random-secret
 VITE_API_BASE=http://localhost:3000
-GOOGLE_CLIENT_ID=your-client-id
-GOOGLE_CLIENT_SECRET=your-client-secret
-GOOGLE_REDIRECT_URI=http://localhost:3000/api/auth/google/callback
 ```
-
-`GOOGLE_*` values are optional for local email/password login. They are required for the **Continue with Google** button.
 
 ## Run Locally
 
@@ -64,16 +59,6 @@ Open `/reset` from the login screen to set a new password for an existing local 
 
 This local reset flow does not send email verification and should be replaced with verified email recovery before public production use.
 
-## Google OAuth
-
-Create an OAuth 2.0 Web application client in Google Cloud and add this redirect URI:
-
-```text
-http://localhost:3000/api/auth/google/callback
-```
-
-Set the client ID and secret in `.env`, restart the backend, and use **Continue with Google**. A successful OAuth flow redirects to the real Gmail inbox.
-
 ## Validation
 
 Build the frontend:
@@ -87,6 +72,17 @@ Check the backend:
 ```text
 http://localhost:3000/api/health
 ```
+
+## Deploy
+
+The frontend is deployed to Vercel and the Express API runs as a persistent Render web service. SQLite and `php.txt` must live on Render's persistent disk; they cannot be stored reliably in Vercel's serverless filesystem.
+
+1. Import this repository into Vercel. Vercel uses `vercel.json` to build the Vite app and route client-side paths to `index.html`.
+2. Create the Render service from `render.yaml`. Render will prompt for `CLIENT_URL`; set it to the Vercel deployment origin, such as `https://your-project.vercel.app`.
+3. In Vercel project settings, set `VITE_API_BASE` to the Render service origin, such as `https://your-api.onrender.com`, then redeploy the frontend.
+4. Add your custom domain in Vercel and configure its DNS as instructed by Vercel. Update Render's `CLIENT_URL` to the final frontend origin after the domain is active.
+
+The Render blueprint creates a persistent disk for `app.db` and `php.txt`, and generates `SESSION_SECRET`. Production cookies require HTTPS. Keep the Vercel frontend and API origins configured exactly so credentialed requests pass CORS checks.
 
 ## Security Notes
 

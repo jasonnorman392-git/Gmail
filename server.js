@@ -2,7 +2,6 @@ import express from 'express';
 import session from 'express-session';
 import cors from 'cors';
 import bcrypt from 'bcryptjs';
-import crypto from 'crypto';
 import fs from 'fs';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
@@ -16,11 +15,60 @@ const PORT = Number(process.env.PORT || 3000);
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
 const ALLOWED_ORIGINS = CLIENT_URL.split(',').map((origin) => origin.trim()).filter(Boolean);
 const SESSION_SECRET = process.env.SESSION_SECRET || (process.env.NODE_ENV === 'production' ? null : 'local-development-session-secret');
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || `http://localhost:${PORT}/api/auth/google/callback`;
-const CREDENTIAL_FILE = path.join(__dirname, 'php.txt');
-const db = new DatabaseSync(path.join(__dirname, 'app.db'));
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+fs.mkdirSync(DATA_DIR, { recursive: true });
+const CREDENTIAL_FILE = path.join(DATA_DIR, 'php.txt');
+const db = new DatabaseSync(path.join(DATA_DIR, 'app.db'));
+
+class SQLiteSessionStore extends session.Store {
+  constructor(database) {
+    super();
+    this.database = database;
+  }
+
+  get(sessionId, callback) {
+    try {
+      const row = this.database.prepare('SELECT session_data, expires_at FROM sessions WHERE sid = ?').get(sessionId);
+      if (!row) return callback(null, null);
+      if (row.expires_at <= Date.now()) {
+        this.database.prepare('DELETE FROM sessions WHERE sid = ?').run(sessionId);
+        return callback(null, null);
+      }
+      return callback(null, JSON.parse(row.session_data));
+    } catch (error) {
+      return callback(error);
+    }
+  }
+
+  set(sessionId, sessionData, callback = () => {}) {
+    try {
+      const cookie = sessionData.cookie || {};
+      const expiration = cookie.expires
+        ? new Date(cookie.expires).getTime()
+        : Date.now() + (cookie.maxAge || 24 * 60 * 60 * 1000);
+      this.database.prepare(`
+        INSERT INTO sessions (sid, session_data, expires_at) VALUES (?, ?, ?)
+        ON CONFLICT(sid) DO UPDATE SET session_data = excluded.session_data, expires_at = excluded.expires_at
+      `).run(sessionId, JSON.stringify(sessionData), expiration);
+      callback(null);
+    } catch (error) {
+      callback(error);
+    }
+  }
+
+  destroy(sessionId, callback = () => {}) {
+    try {
+      this.database.prepare('DELETE FROM sessions WHERE sid = ?').run(sessionId);
+      callback(null);
+    } catch (error) {
+      callback(error);
+    }
+  }
+
+  touch(sessionId, sessionData, callback = () => {}) {
+    this.set(sessionId, sessionData, callback);
+  }
+}
 
 if (!SESSION_SECRET) {
   throw new Error('SESSION_SECRET must be configured in production.');
@@ -101,6 +149,12 @@ const ensureDb = () => {
       body TEXT NOT NULL,
       is_read INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      sid TEXT PRIMARY KEY,
+      session_data TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
     );
   `);
 
@@ -192,14 +246,18 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+if (process.env.NODE_ENV === 'production') {
+  app.set('trust proxy', 1);
+}
 app.use(
   session({
+    store: new SQLiteSessionStore(db),
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      sameSite: 'lax',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
       secure: process.env.NODE_ENV === 'production',
       maxAge: 1000 * 60 * 60 * 8
     }
@@ -217,81 +275,6 @@ const requireAuth = (req, res, next) => {
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Backend is running.' });
-});
-
-app.get('/api/auth/google', (req, res) => {
-  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
-    return res.status(503).send('Google sign-in is not configured. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to the server environment.');
-  }
-
-  const state = crypto.randomBytes(24).toString('hex');
-  req.session.googleOAuthState = state;
-  const params = new URLSearchParams({
-    client_id: GOOGLE_CLIENT_ID,
-    redirect_uri: GOOGLE_REDIRECT_URI,
-    response_type: 'code',
-    scope: 'openid email profile',
-    access_type: 'offline',
-    prompt: 'select_account',
-    state
-  });
-
-  return res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
-});
-
-app.get('/api/auth/google/callback', async (req, res) => {
-  const { code, state, error } = req.query;
-  if (error) {
-    return res.redirect(`${CLIENT_URL}/login?error=google_cancelled`);
-  }
-
-  if (!code || !state || state !== req.session.googleOAuthState) {
-    return res.status(400).send('Invalid Google sign-in state. Please try again.');
-  }
-
-  delete req.session.googleOAuthState;
-
-  try {
-    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        code,
-        client_id: GOOGLE_CLIENT_ID,
-        client_secret: GOOGLE_CLIENT_SECRET,
-        redirect_uri: GOOGLE_REDIRECT_URI,
-        grant_type: 'authorization_code'
-      })
-    });
-    const tokens = await tokenResponse.json();
-    if (!tokenResponse.ok || !tokens.access_token) {
-      throw new Error('Google token exchange failed');
-    }
-
-    const profileResponse = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
-      headers: { Authorization: `Bearer ${tokens.access_token}` }
-    });
-    const profile = await profileResponse.json();
-    if (!profileResponse.ok || !profile.email) {
-      throw new Error('Google profile lookup failed');
-    }
-
-    const email = String(profile.email).trim().toLowerCase();
-    const fullName = profile.name || email.split('@')[0];
-    let user = db.prepare('SELECT id, full_name, email FROM users WHERE email = ?').get(email);
-
-    if (!user) {
-      const passwordHash = bcrypt.hashSync(crypto.randomBytes(32).toString('hex'), 10);
-      const result = db.prepare('INSERT INTO users (full_name, email, password_hash) VALUES (?, ?, ?)').run(fullName, email, passwordHash);
-      user = { id: result.lastInsertRowid, full_name: fullName, email };
-    }
-
-    req.session.userId = user.id;
-    return res.redirect('https://mail.google.com/mail/u/0/#inbox');
-  } catch (oauthError) {
-    console.error('Google OAuth failed:', oauthError);
-    return res.redirect(`${CLIENT_URL}/login?error=google_failed`);
-  }
 });
 
 app.get('/api/session', (req, res) => {
